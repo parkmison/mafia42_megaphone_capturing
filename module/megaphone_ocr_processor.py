@@ -1,6 +1,7 @@
 import os
 import cv2
 import easyocr
+import numpy as np
 from datetime import datetime, timedelta
 
 
@@ -18,6 +19,8 @@ class MegaphoneOCRProcessor:
         self.ocr_languages = ocr_languages if ocr_languages else ["ko", "en"]
         self.reader = easyocr.Reader(self.ocr_languages, gpu=False)
 
+        self.prev_image = None  # 이전 이미지 저장용
+
         # 결과 저장 디렉토리 생성
         os.makedirs(self.output_directory, exist_ok=True)
 
@@ -30,19 +33,42 @@ class MegaphoneOCRProcessor:
         rounded_time = dt.replace(second=0, microsecond=0) + timedelta(seconds=seconds)
         return rounded_time
 
+    @staticmethod
+    def _is_similar_image(img1, img2, threshold=0.98):
+        """두 이미지의 유사도를 비교하여 threshold 이상이면 True 반환"""
+        if img1 is None or img2 is None:
+            return False
+
+        if img1.shape != img2.shape:
+            return False
+
+        diff = cv2.absdiff(img1, img2)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        non_zero = np.count_nonzero(diff_gray)
+        total = diff_gray.size
+        similarity = 1 - (non_zero / total)
+
+        return similarity >= threshold
+
     def extract_megaphone(self, screenshot_path):
-        """확성기 영역 추출"""
+        """확성기 영역 추출 (이전 이미지와 유사하면 무시)"""
         image = cv2.imread(screenshot_path)
         if image is None:
             print("이미지를 불러오지 못했습니다.")
             return None
 
+        x, y, w, h = self.megaphone_roi
+        megaphone_region = image[y:y + h, x:x + w]
+
+        if self._is_similar_image(self.prev_image, megaphone_region):
+            print("이전 이미지와 유사하여 건너뜀")
+            return None
+
+        self.prev_image = megaphone_region.copy()
+
         file_creation_time = datetime.fromtimestamp(os.path.getctime(screenshot_path))
         rounded_time = self._round_to_nearest_five(file_creation_time)
         rounded_time_str = rounded_time.strftime("%Y.%m.%d_%H.%M.%S")
-
-        x, y, w, h = self.megaphone_roi
-        megaphone_region = image[y:y + h, x:x + w]
 
         filename = f"megaphone_Screenshot_{rounded_time_str}.png"
         path = os.path.join(self.output_directory, filename)
@@ -100,6 +126,10 @@ class MegaphoneOCRProcessor:
                 f.write("\n".join(all_texts))
 
             print(f"OCR 결과 저장 완료: {text_path}")
+
+            # 원본 이미지 삭제
+            os.remove(image_path)
+
             return all_texts
 
         except Exception as e:
